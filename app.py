@@ -112,13 +112,14 @@ Here is the invoice text:
         data = json.loads(raw_json_str)
 
         # Basic type conversion/cleaning for numeric fields if needed
-        # This helps ensure consistency in your Excel sheet
         numeric_fields = ["Taxable Value", "Invoice Value", "CGST", "SGST", "IGST"]
         for field in numeric_fields:
             if field in data and isinstance(data[field], str):
                 try:
                     # Remove currency symbols, commas, and convert to float
-                    data[field] = float(data[field].replace('$', '').replace('€', '').replace('£', '').replace(',', '').strip())
+                    # Handles various common currency symbols
+                    clean_value = data[field].replace('$', '').replace('€', '').replace('£', '').replace('₹', '').replace(',', '').strip()
+                    data[field] = float(clean_value)
                 except ValueError:
                     data[field] = 0.0 # Default to 0 if conversion fails
 
@@ -153,8 +154,10 @@ uploaded_files = st.file_uploader("📁 Upload PDF Invoice(s):", type="pdf", acc
 if st.button("🚀 Process Invoices"):
     if not api_key:
         st.error("❌ Please enter your Gemini API Key to proceed.")
+        st.stop() # Stop further execution
     elif not uploaded_files:
         st.warning("⚠️ Please upload at least one PDF file to process.")
+        st.stop() # Stop further execution
     else:
         st.info("Starting invoice processing... This might take a moment depending on file size and number of invoices.")
 
@@ -172,41 +175,51 @@ if st.button("🚀 Process Invoices"):
         all_invoices_data = [] # List to store extracted data from all invoices
 
         # 3. Process each uploaded file
-        for uploaded_file in uploaded_files:
-            st.subheader(f"Processing: {uploaded_file.name}")
+        # Use a progress bar for better UX
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for i, uploaded_file in enumerate(uploaded_files):
+            status_text.text(f"Processing invoice {i+1}/{len(uploaded_files)}: {uploaded_file.name}")
             
             # Use Streamlit's BytesIO for in-memory processing, no need for temp files on disk
-            # Reset file pointer for pdfplumber if it was read previously
-            uploaded_file.seek(0) 
+            uploaded_file.seek(0) # Reset file pointer for pdfplumber if it was read previously
 
+            invoice_text = None
             with st.spinner(f"Extracting text from {uploaded_file.name}..."):
                 invoice_text = extract_text_from_pdf(uploaded_file)
                 if not invoice_text:
+                    st.error(f"Failed to extract text from {uploaded_file.name}. Skipping.")
+                    progress_bar.progress((i + 1) / len(uploaded_files))
                     continue # Skip to next file if text extraction fails
 
+            parsed_data = None
             with st.spinner(f"Sending text from {uploaded_file.name} to Gemini for parsing..."):
                 parsed_data = parse_invoice_with_gemini(model, invoice_text, uploaded_file.name)
                 
-                if parsed_data:
-                    # Add original filename for traceability in the Excel sheet
-                    parsed_data['Source_File'] = uploaded_file.name
-                    all_invoices_data.append(parsed_data)
-                    st.success(f"✅ Successfully extracted data from {uploaded_file.name}.")
-                    st.json(parsed_data) # Display raw JSON for verification
-                else:
-                    st.error(f"❌ Failed to extract structured data from {uploaded_file.name}. Check logs above.")
+            if parsed_data:
+                # Add original filename for traceability in the Excel sheet
+                parsed_data['Source_File'] = uploaded_file.name
+                all_invoices_data.append(parsed_data)
+                # Removed direct display of parsed_data here
+                st.success(f"✅ Data processed for {uploaded_file.name}.")
+            else:
+                st.error(f"❌ Failed to extract structured data for {uploaded_file.name}. See errors above.")
+            
+            progress_bar.progress((i + 1) / len(uploaded_files))
+
+        status_text.text("Invoice processing complete!")
+        progress_bar.empty() # Clear the progress bar after completion
 
         # 4. Save all extracted data to Excel and provide download link
         if all_invoices_data:
-            st.success("🎉 All available invoices processed! Consolidating data...")
+            st.success("🎉 All available invoices processed! Your Excel file is ready.")
             try:
                 df = pd.DataFrame(all_invoices_data)
                 
                 # Reorder columns to put Source_File at the beginning for better readability
                 cols = ['Source_File'] + [col for col in df.columns if col != 'Source_File']
                 df = df[cols]
-
-                st.dataframe(df)
 
                 # Create an Excel file in memory
                 output = BytesIO()
@@ -220,13 +233,12 @@ if st.button("🚀 Process Invoices"):
                     file_name="extracted_invoices.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
-                st.success("Your Excel file is ready for download!")
-
+                
             except Exception as e:
                 st.error(f"❌ Error preparing or saving data to Excel: {e}")
-                st.info("Please ensure 'openpyxl' is installed (pip install openpyxl).")
+                st.info("Please ensure 'openpyxl' is installed (pip install openpyxl) and try again.")
         else:
             st.warning("No data could be successfully extracted from any of the uploaded PDFs.")
 
 st.markdown("---")
-st.write("Developed with using Streamlit and Gemini AI.")
+st.write("Developed with ❤️ using Streamlit and Gemini AI.")
